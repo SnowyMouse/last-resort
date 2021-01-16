@@ -162,6 +162,7 @@ int main(int argc, const char **argv) {
         bool use_filesystem_path = false;
         bool dither = false;
         std::filesystem::path tags = "tags";
+        std::optional<std::filesystem::path> output_tags;
         std::optional<Invader::HEK::BitmapDataFormat> force_format;
     } last_resort_options;
     
@@ -171,6 +172,7 @@ int main(int argc, const char **argv) {
     options.emplace_back("fs-path", 'P', 0, "Use a filesystem path for the tag.");
     options.emplace_back("dither", 'd', 0, "Use dithering when possible.");
     options.emplace_back("tags", 't', 1, "Set the tags directory.");
+    options.emplace_back("output-tags", 'o', 1, "Set the output tags directory. By default, the input tags directory is used.");
 
     static constexpr char DESCRIPTION[] = "Convince a tag to work with the Xbox version of Halo when nothing else works.";
     static constexpr char USAGE[] = "[options] -T <action> <tag.class>";
@@ -215,6 +217,9 @@ int main(int argc, const char **argv) {
                 break;
             case 't':
                 last_resort_options.tags = arguments[0];
+                break;
+            case 'o':
+                last_resort_options.output_tags = arguments[0];
                 break;
             default:
                 break;
@@ -272,8 +277,9 @@ int main(int argc, const char **argv) {
         
         auto tag_file_saved = tag_file->generate_hek_tag_data(reinterpret_cast<const Invader::HEK::TagFileHeader *>(file_data->data())->tag_class_int);
         
-        if(!Invader::File::save_file(file_path, tag_file_saved)) {
-            eprintf_error("Failed to write to %s", file_path.string().c_str());
+        auto output_file_path = last_resort_options.output_tags.value_or(last_resort_options.tags) / Invader::File::halo_path_to_preferred_path(path);
+        if(!Invader::File::save_file(output_file_path, tag_file_saved)) {
+            eprintf_error("Failed to write to %s", output_file_path.string().c_str());
             return EXIT_FAILURE;
         }
     }
