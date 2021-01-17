@@ -283,6 +283,10 @@ int main(int argc, const char **argv) {
         auto tag_file_saved = tag_file->generate_hek_tag_data(reinterpret_cast<const Invader::HEK::TagFileHeader *>(file_data->data())->tag_class_int);
         
         auto output_file_path = last_resort_options.output_tags.value() / Invader::File::halo_path_to_preferred_path(path);
+        
+        std::error_code ec;
+        std::filesystem::create_directories(output_file_path.parent_path(), ec); // make dirs
+        
         if(!Invader::File::save_file(output_file_path, tag_file_saved)) {
             eprintf_error("Failed to write to %s", output_file_path.string().c_str());
             return EXIT_FAILURE;
