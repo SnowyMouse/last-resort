@@ -171,11 +171,11 @@ int main(int argc, const char **argv) {
     options.emplace_back("bitmap-format", 'F', 1, "Force the bitmap format to be something else (can be a8r8g8b8, x8r8g8b8, r5g6b5, a1r5g5b5, a4r4g4b4, a8, y8, ay8, a8y8, p8, dxt1, dxt3, dxt5)", "<format>");
     options.emplace_back("fs-path", 'P', 0, "Use a filesystem path for the tag.");
     options.emplace_back("dither", 'd', 0, "Use dithering when possible.");
-    options.emplace_back("tags", 't', 1, "Set the tags directory.");
-    options.emplace_back("output-tags", 'o', 1, "Set the output tags directory. By default, the input tags directory is used.");
+    options.emplace_back("tags", 't', 1, "Set the tags directory.", "<dir>");
+    options.emplace_back("output-tags", 'o', 1, "Set the output tags directory. By default, the input tags directory is used.", "<dir>");
 
     static constexpr char DESCRIPTION[] = "Convince a tag to work with the Xbox version of Halo when nothing else works.";
-    static constexpr char USAGE[] = "[options] -T <action> <tag.class>";
+    static constexpr char USAGE[] = "[options] -T <action> -o <dir> <tag.class>";
     
     auto remaining_arguments = CommandLineOption::parse_arguments<LastResortOptions &>(argc, argv, options, USAGE, DESCRIPTION, 1, 1, last_resort_options, [](char opt, const auto &arguments, auto &last_resort_options) {
         switch(opt) {
@@ -231,6 +231,11 @@ int main(int argc, const char **argv) {
         return EXIT_FAILURE;
     }
     
+    if(!last_resort_options.output_tags.has_value()) {
+        eprintf_error("No output tags directory was specified. Use -h for more information.");
+        return EXIT_FAILURE;
+    }
+    
     std::string path;
     
     if(last_resort_options.use_filesystem_path) {
@@ -277,7 +282,7 @@ int main(int argc, const char **argv) {
         
         auto tag_file_saved = tag_file->generate_hek_tag_data(reinterpret_cast<const Invader::HEK::TagFileHeader *>(file_data->data())->tag_class_int);
         
-        auto output_file_path = last_resort_options.output_tags.value_or(last_resort_options.tags) / Invader::File::halo_path_to_preferred_path(path);
+        auto output_file_path = last_resort_options.output_tags.value() / Invader::File::halo_path_to_preferred_path(path);
         if(!Invader::File::save_file(output_file_path, tag_file_saved)) {
             eprintf_error("Failed to write to %s", output_file_path.string().c_str());
             return EXIT_FAILURE;
