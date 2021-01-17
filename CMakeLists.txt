@@ -17,4 +17,10 @@ add_executable(last-resort
     src/main.cpp
 )
 
+option(INVADER_STATIC_LINKED_LIBS "Use static-linked Invader")
+
 target_link_libraries(last-resort invader)
+
+if(${INVADER_STATIC_LINKED_LIBS})
+    target_link_libraries(last-resort squish ogg vorbis vorbisenc vorbisfile ogg zstd z gomp invader-bitmap-p8-palette)
+endif()
