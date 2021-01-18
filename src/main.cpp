@@ -31,6 +31,8 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         throw std::exception();
     }
     
+    bool require_32_bit_input = bitmap->compressed_color_plate_data.size() > 0;
+    
     std::vector<std::byte> new_bitmap_data;
     for(auto &i : bitmap->bitmap_data) {
         if(i.type != Invader::HEK::BitmapDataType::BITMAP_DATA_TYPE_2D_TEXTURE) {
@@ -43,6 +45,13 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         if(i.pixel_data_offset >= bitmap->processed_pixel_data.size() || size_of_bitmap > bitmap->processed_pixel_data.size() || i.pixel_data_offset + size_of_bitmap > bitmap->processed_pixel_data.size()) {
             eprintf_error("Bitmap tag invalid - bitmap data out of bounds");
             throw std::exception();
+        }
+        
+        if(!require_32_bit_input && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_X8R8G8B8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8) {
+            eprintf_error("One or more bitmaps is NOT 32-bit and there is compressed color plate data");
+            eprintf_error("Converting from a lossy format is not advised if there is compressed color plate data");
+            eprintf_error("You can use `invader-bitmap -R -F 32-bit` to regenerate this bitmap tag");
+            std::exit(EXIT_FAILURE);
         }
         
         auto *data = bitmap->processed_pixel_data.data() + i.pixel_data_offset;
@@ -187,6 +196,8 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
     }
     
     bitmap->processed_pixel_data = new_bitmap_data;
+    
+    bitmap->compressed_color_plate_data.clear(); // clear this in case it isn't -.-
     
     oprintf_success("Modified %zu bitmap%s", bitmap->bitmap_data.size(), bitmap->bitmap_data.size() == 1 ? "" : "s");
 }
