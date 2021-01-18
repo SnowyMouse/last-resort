@@ -23,7 +23,9 @@ enum LastResortAction {
     LAST_RESORT_ACTION_SOUND_TO_XBOX_ADPCM
 };
 
-void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::optional<Invader::HEK::BitmapDataFormat> &force_format, bool dither, void (*modify_pixel)(Invader::ColorPlatePixel &pixel)) {
+using PreferredFormat = std::variant<Invader::HEK::BitmapDataFormat, Invader::HEK::BitmapFormat>;
+
+void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, void (*modify_pixel)(Invader::ColorPlatePixel &pixel)) {
     if(bitmap == nullptr) {
         eprintf_error("Invalid tag provided for this action");
         throw std::exception();
@@ -51,9 +53,119 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         
         std::vector<std::byte> new_data;
         
+        // Get each mipmap
+        std::vector<std::vector<std::byte>> mipmaps;
+        for(std::size_t m = 0; m <= i.mipmap_count; m++) {
+            mipmaps.emplace_back(Invader::BitmapEncode::encode_bitmap(data, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, mw, mh));
+            mw = std::max(mw / 2, ml);
+            mh = std::max(mh / 2, ml);
+            md = std::max(md / 2, ml);
+        }
+        
+        // Reset the variables
+        mw = i.width;
+        mh = i.height;
+        md = i.depth;
+        
+        if(force_format.has_value()) {
+            auto &value = *force_format;
+            auto *force_format = std::get_if<Invader::HEK::BitmapDataFormat>(&value);
+            if(force_format) {
+                i.format = *force_format;
+            }
+            else {
+                auto *force_format_type = std::get_if<Invader::HEK::BitmapFormat>(&value);
+                if(force_format_type) {
+                    auto &meme = *force_format_type;
+                    
+                    // Determine alpha depth
+                    bool alpha_exists = false;
+                    bool alpha_multi_bit = false;
+                    
+                    bool white = true;
+                    bool ay8 = true;
+                    
+                    for(auto &m : mipmaps) {
+                        auto *start = reinterpret_cast<Invader::ColorPlatePixel *>(m.data());
+                        auto *end = reinterpret_cast<Invader::ColorPlatePixel *>(m.data() + m.size());
+                        
+                        for(auto *p = start; p < end; p++) {
+                            if(p->alpha != 0xFF) {
+                                alpha_exists = true;
+                                if(p->alpha != 0) {
+                                    alpha_multi_bit = true;
+                                    goto spaghetti_exit_mipmaps;
+                                }
+                            }
+                            
+                            white = white && p->red == 0xFF && p->green == 0xFF && p->blue == 0xFF;
+                            ay8 = ay8 && p->convert_to_a8() == p->convert_to_y8();
+                        }
+                    }
+                    
+                    // Check the format
+                    spaghetti_exit_mipmaps:
+                    switch(meme) {
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_MONOCHROME:
+                            if(!alpha_exists) {
+                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_Y8;
+                            }
+                            else if(white) {
+                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8;
+                            }
+                            else if(ay8) {
+                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_AY8;
+                            }
+                            else {
+                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8Y8;
+                            }
+                            break;
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_DXT1:
+                            i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1;
+                            break;
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_DXT3:
+                            i.format = alpha_exists ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT3 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1;
+                            break;
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_DXT5:
+                            i.format = alpha_exists ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT5 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1;
+                            break;
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_32_BIT:
+                            i.format = alpha_exists ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_X8R8G8B8;
+                            break;
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_16_BIT:
+                            i.format = alpha_exists ? (alpha_multi_bit ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A4R4G4B4 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A1R5G5B5) 
+                                                    : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_R5G6B5;
+                            break;
+                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_ENUM_COUNT:
+                            std::terminate();
+                    }
+                }
+                else {
+                    eprintf_error("what");
+                    std::terminate();
+                }
+            }
+            
+            // Set palettized flag if needed
+            if(i.format == Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_P8_BUMP) {
+                i.flags |= Invader::HEK::BitmapDataFlagsFlag::BITMAP_DATA_FLAGS_FLAG_PALETTIZED;
+            }
+            else {
+                i.flags &= ~Invader::HEK::BitmapDataFlagsFlag::BITMAP_DATA_FLAGS_FLAG_PALETTIZED;
+            }
+            
+            // Set compressed flag if needed
+            if(i.format == Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1 || i.format == Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT3 || i.format == Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT5) {
+                i.flags |= Invader::HEK::BitmapDataFlagsFlag::BITMAP_DATA_FLAGS_FLAG_COMPRESSED;
+            }
+            else {
+                i.flags &= ~Invader::HEK::BitmapDataFlagsFlag::BITMAP_DATA_FLAGS_FLAG_COMPRESSED;
+            }
+        }
+        
         for(std::size_t m = 0; m <= i.mipmap_count; m++) {
             auto size_of_mipmap = Invader::HEK::size_of_bitmap(mw, mh, md, 0, i.format, i.type);
-            auto converted = Invader::BitmapEncode::encode_bitmap(data, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, mw, mh);
+            auto &converted = mipmaps[m];
             
             auto *pixel_start = reinterpret_cast<Invader::ColorPlatePixel *>(converted.data());
             auto *pixel_end = reinterpret_cast<Invader::ColorPlatePixel *>(converted.data() + converted.size());
@@ -62,7 +174,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
                 modify_pixel(*p);
             }
             
-            auto converted_back = Invader::BitmapEncode::encode_bitmap(converted.data(), Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, force_format.value_or(i.format), mw, mh, dither, dither, dither, dither);
+            auto converted_back = Invader::BitmapEncode::encode_bitmap(converted.data(), Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.format, mw, mh, dither, dither, dither, dither);
             new_data.insert(new_data.end(), converted_back.begin(), converted_back.end());
             mw = std::max(mw / 2, ml);
             mh = std::max(mh / 2, ml);
@@ -72,10 +184,6 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         
         i.pixel_data_offset = new_bitmap_data.size();
         new_bitmap_data.insert(new_bitmap_data.end(), new_data.begin(), new_data.end());
-        
-        if(force_format.has_value()) {
-            i.format = *force_format;
-        }
     }
     
     bitmap->processed_pixel_data = new_bitmap_data;
@@ -83,7 +191,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
     oprintf_success("Modified %zu bitmap%s", bitmap->bitmap_data.size(), bitmap->bitmap_data.size() == 1 ? "" : "s");
 }
 
-void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<Invader::HEK::BitmapDataFormat> &force_format, bool dither) {
+void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
     iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::ColorPlatePixel &pixel) {
         std::uint8_t mask = pixel.convert_to_y8();
         std::uint8_t meter = pixel.alpha;
@@ -95,7 +203,7 @@ void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<Invader
     });
 }
 
-void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<Invader::HEK::BitmapDataFormat> &force_format, bool dither) {
+void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
     iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::ColorPlatePixel &pixel) {
         Invader::ColorPlatePixel new_pixel;
         new_pixel.green = pixel.green; // self illumination is passed through
@@ -106,7 +214,7 @@ void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<Inva
     });
 }
 
-void multi_xbox_to_gbx(Invader::Parser::Bitmap *bitmap, const std::optional<Invader::HEK::BitmapDataFormat> &force_format, bool dither) {
+void multi_xbox_to_gbx(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
     iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::ColorPlatePixel &pixel) {
         Invader::ColorPlatePixel new_pixel;
         new_pixel.green = pixel.green; // self illumination is passed through
@@ -148,6 +256,7 @@ void sound_to_xbox_adpcm(Invader::Parser::Sound *sound) {
                     throw std::exception();
             }
             j.format = Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM;
+            j.buffer_size = 0; // clear this
         }
     }
     
@@ -163,12 +272,12 @@ int main(int argc, const char **argv) {
         bool dither = false;
         std::filesystem::path tags = "tags";
         std::optional<std::filesystem::path> output_tags;
-        std::optional<Invader::HEK::BitmapDataFormat> force_format;
+        std::optional<PreferredFormat> force_format;
     } last_resort_options;
     
     std::vector<CommandLineOption> options;
     options.emplace_back("type", 'T', 1, "Set the type of action to take. Can be: hud-meter-swap, multi-gbx-to-xbox, multi-xbox-to-gbx, sound-to-xbox-adpcm, bitmap-passthrough", "<action>");
-    options.emplace_back("bitmap-format", 'F', 1, "Force the bitmap format to be something else (can be a8r8g8b8, x8r8g8b8, r5g6b5, a1r5g5b5, a4r4g4b4, a8, y8, ay8, a8y8, p8, dxt1, dxt3, dxt5)", "<format>");
+    options.emplace_back("bitmap-format", 'F', 1, "Force the bitmap format to be something else (can be dxt1, dxt3, dxt5, monochrome, 32-bit, 16-bit, a8r8g8b8, x8r8g8b8, r5g6b5, a1r5g5b5, a4r4g4b4, a8, y8, ay8, a8y8, p8)", "<format>");
     options.emplace_back("fs-path", 'P', 0, "Use a filesystem path for the tag.");
     options.emplace_back("dither", 'd', 0, "Use dithering when possible.");
     options.emplace_back("tags", 't', 1, "Set the tags directory.", "<dir>");
@@ -211,8 +320,13 @@ int main(int argc, const char **argv) {
                     last_resort_options.force_format = Invader::HEK::BitmapDataFormat_from_string(arguments[0]);
                 }
                 catch(std::exception &) {
-                    eprintf_error("Unknown format: %s", arguments[0]);
-                    std::exit(EXIT_FAILURE);
+                    try {
+                        last_resort_options.force_format = Invader::HEK::BitmapFormat_from_string(arguments[0]);
+                    }
+                    catch(std::exception &) {
+                        eprintf_error("Unknown format: %s", arguments[0]);
+                        std::exit(EXIT_FAILURE);
+                    }
                 }
                 break;
             case 't':
