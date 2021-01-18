@@ -47,7 +47,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
             throw std::exception();
         }
         
-        if(!require_32_bit_input && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_X8R8G8B8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8) {
+        if(require_32_bit_input && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_X8R8G8B8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8) {
             eprintf_error("One or more bitmaps is NOT 32-bit and there is compressed color plate data");
             eprintf_error("Converting from a lossy format is not advised if there is compressed color plate data");
             eprintf_error("You can use `invader-bitmap -R -F 32-bit` to regenerate this bitmap tag");
