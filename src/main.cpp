@@ -236,7 +236,7 @@ void multi_xbox_to_gbx(Invader::Parser::Bitmap *bitmap, const std::optional<Pref
     });
 }
 
-void sound_to_xbox_adpcm(Invader::Parser::Sound *sound) {
+bool sound_to_xbox_adpcm(Invader::Parser::Sound *sound) {
     if(sound == nullptr) {
         eprintf_error("Invalid tag provided for this action");
         throw std::exception();
@@ -246,32 +246,116 @@ void sound_to_xbox_adpcm(Invader::Parser::Sound *sound) {
     sound->format = Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM;
     std::size_t channel_count = sound->channel_count == Invader::HEK::SoundChannelCount::SOUND_CHANNEL_COUNT_MONO ? 1 : 2;
     std::size_t sample_rate = sound->sample_rate == Invader::HEK::SoundSampleRate::SOUND_SAMPLE_RATE_22050_HZ ? 22050 : 44100;
+    bool split = sound->flags & Invader::HEK::SoundFlagsFlag::SOUND_FLAGS_FLAG_SPLIT_LONG_SOUND_INTO_PERMUTATIONS;
     
     for(auto &i : sound->pitch_ranges) {
-        for(auto &j : i.permutations) {
-            switch(j.format) {
-                case Invader::HEK::SoundFormat::SOUND_FORMAT_16_BIT_PCM:
-                    j.samples = Invader::SoundEncoder::encode_to_xbox_adpcm(Invader::SoundReader::sound_from_16_bit_pcm_big_endian(j.samples.data(), j.samples.size(), channel_count, sample_rate).pcm, 16, channel_count);
-                    converted++;
-                    break;
-                case Invader::HEK::SoundFormat::SOUND_FORMAT_OGG_VORBIS: {
-                    auto sound = Invader::SoundReader::sound_from_ogg(j.samples.data(), j.samples.size());
-                    j.samples = Invader::SoundEncoder::encode_to_xbox_adpcm(sound.pcm, sound.bits_per_sample, channel_count);
-                    converted++;
-                    break;
+        std::vector<Invader::Parser::SoundPermutation> permutations_memes;
+        
+        auto re_encode_real_permutation = [&converted, &split, &channel_count, &sample_rate, &i, &permutations_memes](std::size_t permutation) {
+            auto &base_permutation = i.permutations[permutation];
+            auto &new_permutation = permutations_memes.emplace_back(base_permutation);
+            auto format = new_permutation.format;
+            new_permutation.samples.clear();
+            new_permutation.buffer_size = 0;
+            new_permutation.format = Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM;
+            
+            // Append it!
+            auto append_permutation = [&channel_count, &sample_rate, &new_permutation, &format](auto &permutation) {
+                std::vector<std::byte> samples;
+                
+                switch(format) {
+                    case Invader::HEK::SoundFormat::SOUND_FORMAT_16_BIT_PCM:
+                        samples = Invader::SoundEncoder::encode_to_xbox_adpcm(Invader::SoundReader::sound_from_16_bit_pcm_big_endian(permutation.samples.data(), permutation.samples.size(), channel_count, sample_rate).pcm, 16, channel_count);
+                        break;
+                    case Invader::HEK::SoundFormat::SOUND_FORMAT_OGG_VORBIS: {
+                        auto sound = Invader::SoundReader::sound_from_ogg(permutation.samples.data(), permutation.samples.size());
+                        samples = Invader::SoundEncoder::encode_to_xbox_adpcm(sound.pcm, sound.bits_per_sample, channel_count);
+                        break;
+                    }
+                    case Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM:
+                        samples = permutation.samples;
+                        break;
+                    default:
+                        eprintf_error("Unknown format");
+                        throw std::exception();
                 }
-                case Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM:
-                    break;
-                default:
-                    eprintf_error("Unknown format");
+                
+                new_permutation.samples.insert(new_permutation.samples.end(), samples.begin(), samples.end());
+            };
+            
+            // Done
+            std::size_t next_permutation = permutation;
+            do {
+                if(split && next_permutation > i.permutations.size()) {
+                    eprintf_error("Next permutation is out of bounds");
                     throw std::exception();
+                }
+                
+                auto &p = i.permutations[next_permutation];
+                append_permutation(p);
+                next_permutation = p.next_permutation_index;
+            } while(split && next_permutation != NULL_INDEX);
+            
+            if(base_permutation.format != Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM) {
+                converted++;
             }
-            j.format = Invader::HEK::SoundFormat::SOUND_FORMAT_XBOX_ADPCM;
-            j.buffer_size = 0; // clear this
+        };
+        
+        // First pass: go through each real permutation
+        if(split) {
+            if(i.actual_permutation_count > i.permutations.size()) {
+                eprintf_error("Actual permutation count for %s is wrong", i.name.string);
+                throw std::exception();
+            }
+            
+            for(std::size_t j = 0; j < i.actual_permutation_count; j++) {
+                re_encode_real_permutation(j);
+            }
+        }
+        
+        // If we don't have them split into permutations, just go throguh all of them
+        else {
+            for(std::size_t j = 0; j < i.permutations.size(); j++) {
+                re_encode_real_permutation(j);
+            }
+        }
+        
+        i.permutations.clear();
+        
+        // Copy in new permutations
+        i.permutations = std::move(permutations_memes);
+        
+        // Now split them!
+        if(split) {
+            for(std::size_t j = 0; j < i.actual_permutation_count; j++) {
+                auto samples = std::move(i.permutations[j].samples);
+                auto *sample_data = samples.data();
+                auto sample_size = samples.size();
+                auto template_sound = i.permutations[j];
+                
+                auto *permutation_to_modify = &i.permutations[j];
+                static const constexpr std::size_t max_permutation_bytes = 65520; // precomputed
+                
+                // Add each one at a time
+                for(std::size_t q = 0; q < sample_size; q += max_permutation_bytes) {
+                    if(q) {
+                        permutation_to_modify->next_permutation_index = i.permutations.size();
+                        permutation_to_modify = &i.permutations.emplace_back(template_sound);
+                    }
+                    permutation_to_modify->samples = std::vector<std::byte>(sample_data + q, sample_data + q + std::min(sample_size - q, max_permutation_bytes));
+                    permutation_to_modify->next_permutation_index = NULL_INDEX;
+                }
+            }
         }
     }
     
-    oprintf_success("Converted %zu permutation%s into Xbox ADPCM", converted, converted == 1 ? "" : "s");
+    if(converted > 0) {
+        oprintf_success("Converted %zu permutation%s into Xbox ADPCM", converted, converted == 1 ? "" : "s");
+        return true;
+    }
+    else {
+        return false;
+    }
 }
 
 int main(int argc, const char **argv) {
@@ -401,7 +485,10 @@ int main(int argc, const char **argv) {
                 iterate_through_bitmap_tag(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither, [](auto &) {});
                 break;
             case LastResortAction::LAST_RESORT_ACTION_SOUND_TO_XBOX_ADPCM:
-                sound_to_xbox_adpcm(dynamic_cast<Invader::Parser::Sound *>(tag_file.get()));
+                if(!sound_to_xbox_adpcm(dynamic_cast<Invader::Parser::Sound *>(tag_file.get()))) {
+                    oprintf("No conversion necessary; sound tag already Xbox ADPCM\n");
+                    std::exit(EXIT_SUCCESS);
+                }
                 break;
         }
         
