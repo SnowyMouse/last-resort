@@ -64,8 +64,10 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         
         // Get each mipmap
         std::vector<std::vector<std::byte>> mipmaps;
+        auto *mipmap_start = data;
         for(std::size_t m = 0; m <= i.mipmap_count; m++) {
-            mipmaps.emplace_back(Invader::BitmapEncode::encode_bitmap(data, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, mw, mh));
+            mipmaps.emplace_back(Invader::BitmapEncode::encode_bitmap(mipmap_start, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, mw, mh));
+            mipmap_start += Invader::HEK::size_of_bitmap(mw, mh, md, 0, i.format, i.type);
             mw = std::max(mw / 2, ml);
             mh = std::max(mh / 2, ml);
             md = std::max(md / 2, ml);
