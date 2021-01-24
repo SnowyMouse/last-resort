@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.12)
 
 # Project name - You should change this if you're making a fork
 project("Last Resort"
-    VERSION 0.1.2
+    VERSION 0.2.1
     DESCRIPTION "Convince tags to work on the Xbox version of the game. Use this when nothing else works"
     LANGUAGES C CXX
 )
