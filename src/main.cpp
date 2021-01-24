@@ -9,7 +9,7 @@
 #include <invader/tag/hek/header.hpp>
 #include <invader/sound/sound_encoder.hpp>
 #include <invader/sound/sound_reader.hpp>
-#include <invader/bitmap/color_plate_pixel.hpp>
+#include <invader/bitmap/pixel.hpp>
 #include <invader/bitmap/bitmap_encode.hpp>
 #include <invader/tag/hek/class/bitmap.hpp>
 #include <optional>
@@ -25,7 +25,7 @@ enum LastResortAction {
 
 using PreferredFormat = std::variant<Invader::HEK::BitmapDataFormat, Invader::HEK::BitmapFormat>;
 
-void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, void (*modify_pixel)(Invader::ColorPlatePixel &pixel)) {
+void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, void (*modify_pixel)(Invader::Pixel &pixel)) {
     if(bitmap == nullptr) {
         eprintf_error("Invalid tag provided for this action");
         throw std::exception();
@@ -88,68 +88,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
                 auto *force_format_type = std::get_if<Invader::HEK::BitmapFormat>(&value);
                 if(force_format_type) {
                     auto &meme = *force_format_type;
-                    
-                    // Determine alpha depth
-                    bool alpha_exists = false;
-                    bool alpha_multi_bit = false;
-                    
-                    bool white = true;
-                    bool ay8 = true;
-                    
-                    for(auto &m : mipmaps) {
-                        auto *start = reinterpret_cast<Invader::ColorPlatePixel *>(m.data());
-                        auto *end = reinterpret_cast<Invader::ColorPlatePixel *>(m.data() + m.size());
-                        
-                        for(auto *p = start; p < end; p++) {
-                            if(p->alpha != 0xFF) {
-                                alpha_exists = true;
-                                if(p->alpha != 0) {
-                                    alpha_multi_bit = true;
-                                    goto spaghetti_exit_mipmaps;
-                                }
-                            }
-                            
-                            white = white && p->red == 0xFF && p->green == 0xFF && p->blue == 0xFF;
-                            ay8 = ay8 && p->convert_to_a8() == p->convert_to_y8();
-                        }
-                    }
-                    
-                    // Check the format
-                    spaghetti_exit_mipmaps:
-                    switch(meme) {
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_MONOCHROME:
-                            if(!alpha_exists) {
-                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_Y8;
-                            }
-                            else if(white) {
-                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8;
-                            }
-                            else if(ay8) {
-                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_AY8;
-                            }
-                            else {
-                                i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8Y8;
-                            }
-                            break;
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_DXT1:
-                            i.format = Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1;
-                            break;
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_DXT3:
-                            i.format = alpha_exists ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT3 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1;
-                            break;
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_DXT5:
-                            i.format = alpha_exists ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT5 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_DXT1;
-                            break;
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_32_BIT:
-                            i.format = alpha_exists ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_X8R8G8B8;
-                            break;
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_16_BIT:
-                            i.format = alpha_exists ? (alpha_multi_bit ? Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A4R4G4B4 : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A1R5G5B5) 
-                                                    : Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_R5G6B5;
-                            break;
-                        case Invader::HEK::BitmapFormat::BITMAP_FORMAT_ENUM_COUNT:
-                            std::terminate();
-                    }
+                    i.format = Invader::BitmapEncode::most_efficient_format(mipmaps[0].data(), mw, mh, md, meme, i.type);
                 }
                 else {
                     eprintf_error("what");
@@ -178,8 +117,8 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
             auto size_of_mipmap = Invader::HEK::size_of_bitmap(mw, mh, md, 0, i.format, i.type);
             auto &converted = mipmaps[m];
             
-            auto *pixel_start = reinterpret_cast<Invader::ColorPlatePixel *>(converted.data());
-            auto *pixel_end = reinterpret_cast<Invader::ColorPlatePixel *>(converted.data() + converted.size());
+            auto *pixel_start = reinterpret_cast<Invader::Pixel *>(converted.data());
+            auto *pixel_end = reinterpret_cast<Invader::Pixel *>(converted.data() + converted.size());
             
             for(auto *p = pixel_start; p < pixel_end; p++) {
                 modify_pixel(*p);
@@ -205,7 +144,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
 }
 
 void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
-    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::ColorPlatePixel &pixel) {
+    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::Pixel &pixel) {
         std::uint8_t mask = pixel.convert_to_y8();
         std::uint8_t meter = pixel.alpha;
         
@@ -217,8 +156,8 @@ void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<Preferr
 }
 
 void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
-    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::ColorPlatePixel &pixel) {
-        Invader::ColorPlatePixel new_pixel;
+    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::Pixel &pixel) {
+        Invader::Pixel new_pixel;
         new_pixel.green = pixel.green; // self illumination is passed through
         new_pixel.alpha = 0xFF; // pixel.red; // auxilary is memed to 0xFF because DXT1                                                                                                           
         new_pixel.red = pixel.blue; // detail/specular is memed
@@ -228,8 +167,8 @@ void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<Pref
 }
 
 void multi_xbox_to_gbx(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
-    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::ColorPlatePixel &pixel) {
-        Invader::ColorPlatePixel new_pixel;
+    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::Pixel &pixel) {
+        Invader::Pixel new_pixel;
         new_pixel.green = pixel.green; // self illumination is passed through
         new_pixel.red = 0x00; // pixel.alpha; // auxilary is memed to 0x00
         new_pixel.blue = pixel.red; // detail/specular is memed
