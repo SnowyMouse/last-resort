@@ -35,12 +35,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
     
     std::vector<std::byte> new_bitmap_data;
     for(auto &i : bitmap->bitmap_data) {
-        if(i.type != Invader::HEK::BitmapDataType::BITMAP_DATA_TYPE_2D_TEXTURE) {
-            eprintf_error("Non-2D textures aren't supported yet");
-            throw std::exception();
-        }
-        
-        auto size_of_bitmap = Invader::HEK::size_of_bitmap(i.width, i.height, i.depth, i.mipmap_count, i.format, i.type);
+        auto size_of_bitmap = Invader::BitmapEncode::bitmap_data_size(i.width, i.height, i.depth, i.mipmap_count, i.format, i.type);
         
         if(i.pixel_data_offset >= bitmap->processed_pixel_data.size() || size_of_bitmap > bitmap->processed_pixel_data.size() || i.pixel_data_offset + size_of_bitmap > bitmap->processed_pixel_data.size()) {
             eprintf_error("Bitmap tag invalid - bitmap data out of bounds");
@@ -55,29 +50,9 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         }
         
         auto *data = bitmap->processed_pixel_data.data() + i.pixel_data_offset;
-        std::size_t mw = i.width;
-        std::size_t mh = i.height;
-        std::size_t md = i.depth;
-        std::size_t ml = 1;
+        std::vector<std::byte> new_data = Invader::BitmapEncode::encode_bitmap(data, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.width, i.height, i.depth, i.type, i.mipmap_count);
         
-        std::vector<std::byte> new_data;
-        
-        // Get each mipmap
-        std::vector<std::vector<std::byte>> mipmaps;
-        auto *mipmap_start = data;
-        for(std::size_t m = 0; m <= i.mipmap_count; m++) {
-            mipmaps.emplace_back(Invader::BitmapEncode::encode_bitmap(mipmap_start, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, mw, mh));
-            mipmap_start += Invader::HEK::size_of_bitmap(mw, mh, md, 0, i.format, i.type);
-            mw = std::max(mw / 2, ml);
-            mh = std::max(mh / 2, ml);
-            md = std::max(md / 2, ml);
-        }
-        
-        // Reset the variables
-        mw = i.width;
-        mh = i.height;
-        md = i.depth;
-        
+        // Figure out the bitmap to force it to if we need to force the bitmap
         if(force_format.has_value()) {
             auto &value = *force_format;
             auto *force_format = std::get_if<Invader::HEK::BitmapDataFormat>(&value);
@@ -88,7 +63,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
                 auto *force_format_type = std::get_if<Invader::HEK::BitmapFormat>(&value);
                 if(force_format_type) {
                     auto &meme = *force_format_type;
-                    i.format = Invader::BitmapEncode::most_efficient_format(mipmaps[0].data(), mw, mh, md, meme, i.type);
+                    i.format = Invader::BitmapEncode::most_efficient_format(new_data.data(), i.width, i.height, i.depth, meme, i.type, 0);
                 }
                 else {
                     eprintf_error("what");
@@ -113,24 +88,15 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
             }
         }
         
-        for(std::size_t m = 0; m <= i.mipmap_count; m++) {
-            auto size_of_mipmap = Invader::HEK::size_of_bitmap(mw, mh, md, 0, i.format, i.type);
-            auto &converted = mipmaps[m];
-            
-            auto *pixel_start = reinterpret_cast<Invader::Pixel *>(converted.data());
-            auto *pixel_end = reinterpret_cast<Invader::Pixel *>(converted.data() + converted.size());
-            
-            for(auto *p = pixel_start; p < pixel_end; p++) {
-                modify_pixel(*p);
-            }
-            
-            auto converted_back = Invader::BitmapEncode::encode_bitmap(converted.data(), Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.format, mw, mh, dither, dither, dither, dither);
-            new_data.insert(new_data.end(), converted_back.begin(), converted_back.end());
-            mw = std::max(mw / 2, ml);
-            mh = std::max(mh / 2, ml);
-            md = std::max(md / 2, ml);
-            data += size_of_mipmap;
+        // Go through eachp ixel
+        auto *first_pixel = reinterpret_cast<Invader::Pixel *>(new_data.data());
+        auto *last_pixel = reinterpret_cast<Invader::Pixel *>(new_data.data() + new_data.size());
+        for(auto *pixel = first_pixel; pixel < last_pixel; pixel++) {
+            modify_pixel(*pixel);
         }
+        
+        // Done
+        new_data = Invader::BitmapEncode::encode_bitmap(data, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.format, i.width, i.height, i.depth, i.type, i.mipmap_count);
         
         i.pixel_data_offset = new_bitmap_data.size();
         new_bitmap_data.insert(new_bitmap_data.end(), new_data.begin(), new_data.end());
