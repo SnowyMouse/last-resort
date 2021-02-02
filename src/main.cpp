@@ -25,7 +25,7 @@ enum LastResortAction {
 
 using PreferredFormat = std::variant<Invader::HEK::BitmapDataFormat, Invader::HEK::BitmapFormat>;
 
-void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, void (*modify_pixel)(Invader::Pixel &pixel)) {
+void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, bool generate_mipmaps, void (*modify_pixel)(Invader::Pixel &pixel)) {
     if(bitmap == nullptr) {
         eprintf_error("Invalid tag provided for this action");
         throw std::exception();
@@ -36,6 +36,7 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
     std::vector<std::byte> new_bitmap_data;
     for(auto &i : bitmap->bitmap_data) {
         auto size_of_bitmap = Invader::BitmapEncode::bitmap_data_size(i.width, i.height, i.depth, i.mipmap_count, i.format, i.type);
+        bool should_regenerate_mipmaps = generate_mipmaps && i.type == Invader::HEK::BitmapDataType::BITMAP_DATA_TYPE_2D_TEXTURE && i.depth == 1;
         
         if(i.pixel_data_offset >= bitmap->processed_pixel_data.size() || size_of_bitmap > bitmap->processed_pixel_data.size() || i.pixel_data_offset + size_of_bitmap > bitmap->processed_pixel_data.size()) {
             eprintf_error("Bitmap tag invalid - bitmap data out of bounds");
@@ -50,6 +51,13 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         }
         
         auto *data = bitmap->processed_pixel_data.data() + i.pixel_data_offset;
+        
+        // If regenerate mipmaps, reduce mipmap count to 0
+        if(should_regenerate_mipmaps) {
+            i.mipmap_count = 0;
+        }
+        
+        // Get it!
         std::vector<std::byte> new_data = Invader::BitmapEncode::encode_bitmap(data, i.format, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.width, i.height, i.depth, i.type, i.mipmap_count);
         
         // Figure out the bitmap to force it to if we need to force the bitmap
@@ -88,15 +96,74 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
             }
         }
         
-        // Go through eachp ixel
+        // Go through each pixel
         auto *first_pixel = reinterpret_cast<Invader::Pixel *>(new_data.data());
         auto *last_pixel = reinterpret_cast<Invader::Pixel *>(new_data.data() + new_data.size());
         for(auto *pixel = first_pixel; pixel < last_pixel; pixel++) {
             modify_pixel(*pixel);
         }
         
+        // Generate mipmaps
+        if(should_regenerate_mipmaps && (i.width > 1 || i.height > 1)) {
+            std::size_t old_mw = i.width;
+            std::size_t old_mh = i.height;
+            std::size_t mw = old_mw / 2;
+            std::size_t mh = old_mh / 2;
+            static const constexpr std::size_t min_dimension = 1;
+            auto *last_mipmap = first_pixel;
+            
+            while(true) {
+                std::vector<Invader::Pixel> mipmap(mw * mh);
+                for(std::size_t y = 0; y < mh; y++) {
+                    for(std::size_t x = 0; x < mw; x++) {
+                        std::size_t red = 0, green = 0, blue = 0, alpha = 0, count = 0;
+                        
+                        std::size_t old_mipmap_x = x * 2;
+                        std::size_t old_mipmap_y = y * 2;
+                        
+                        for(std::size_t omy = old_mipmap_y; omy < old_mh && omy < old_mipmap_y + 2; omy++) {
+                            for(std::size_t omx = old_mipmap_x; omx < old_mw && omx < old_mipmap_x + 2; omx++) {
+                                auto &color = last_mipmap[omx + omy * old_mw];
+                                alpha += color.alpha;
+                                red += color.red;
+                                green += color.green;
+                                blue += color.blue;
+                                count++;
+                            }
+                        }
+                        
+                        if(count) {
+                            auto &mc = mipmap[x + y * mw];
+                            mc.alpha = alpha / count;
+                            mc.green = green / count;
+                            mc.red = red / count;
+                            mc.blue = blue / count;
+                        }
+                    }
+                }
+                
+                auto old_size = new_data.size();
+                new_data.insert(new_data.end(), reinterpret_cast<std::byte *>(mipmap.data()), reinterpret_cast<std::byte *>(mipmap.data() + mipmap.size()));
+                last_mipmap = reinterpret_cast<Invader::Pixel *>(new_data.data() + old_size);
+                old_mh = mh;
+                old_mw = mw;
+                mw = std::max(mw / 2, min_dimension);
+                mh = std::max(mh / 2, min_dimension);
+                
+                i.mipmap_count++;
+                
+                if(old_mw == 1 && old_mh == 1) {
+                    break;
+                }
+            }
+        }
+        
+        if(!should_regenerate_mipmaps && generate_mipmaps) {
+            eprintf_warn("Unable to regenerate mipmaps for this bitmap type");
+        }
+        
         // Done
-        new_data = Invader::BitmapEncode::encode_bitmap(data, Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.format, i.width, i.height, i.depth, i.type, i.mipmap_count);
+        new_data = Invader::BitmapEncode::encode_bitmap(new_data.data(), Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8, i.format, i.width, i.height, i.depth, i.type, i.mipmap_count, dither, dither, dither, dither);
         
         i.pixel_data_offset = new_bitmap_data.size();
         new_bitmap_data.insert(new_bitmap_data.end(), new_data.begin(), new_data.end());
@@ -109,8 +176,8 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
     oprintf_success("Modified %zu bitmap%s", bitmap->bitmap_data.size(), bitmap->bitmap_data.size() == 1 ? "" : "s");
 }
 
-void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
-    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::Pixel &pixel) {
+void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, bool generate_mipmaps) {
+    iterate_through_bitmap_tag(bitmap, force_format, dither, generate_mipmaps, [](Invader::Pixel &pixel) {
         std::uint8_t mask = pixel.convert_to_y8();
         std::uint8_t meter = pixel.alpha;
         
@@ -121,8 +188,8 @@ void hud_meter_swap(Invader::Parser::Bitmap *bitmap, const std::optional<Preferr
     });
 }
 
-void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
-    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::Pixel &pixel) {
+void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, bool generate_mipmaps) {
+    iterate_through_bitmap_tag(bitmap, force_format, dither, generate_mipmaps, [](Invader::Pixel &pixel) {
         Invader::Pixel new_pixel;
         new_pixel.green = pixel.green; // self illumination is passed through
         new_pixel.alpha = 0xFF; // pixel.red; // auxilary is memed to 0xFF because DXT1                                                                                                           
@@ -132,8 +199,8 @@ void multi_gbx_to_xbox(Invader::Parser::Bitmap *bitmap, const std::optional<Pref
     });
 }
 
-void multi_xbox_to_gbx(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither) {
-    iterate_through_bitmap_tag(bitmap, force_format, dither, [](Invader::Pixel &pixel) {
+void multi_xbox_to_gbx(Invader::Parser::Bitmap *bitmap, const std::optional<PreferredFormat> &force_format, bool dither, bool generate_mipmaps) {
+    iterate_through_bitmap_tag(bitmap, force_format, dither, generate_mipmaps, [](Invader::Pixel &pixel) {
         Invader::Pixel new_pixel;
         new_pixel.green = pixel.green; // self illumination is passed through
         new_pixel.red = 0x00; // pixel.alpha; // auxilary is memed to 0x00
@@ -272,6 +339,7 @@ int main(int argc, const char **argv) {
         std::optional<LastResortAction> action;
         bool use_filesystem_path = false;
         bool dither = false;
+        bool generate_mipmaps = false;
         std::filesystem::path tags = "tags";
         std::optional<std::filesystem::path> output_tags;
         std::optional<PreferredFormat> force_format;
@@ -284,6 +352,7 @@ int main(int argc, const char **argv) {
     options.emplace_back("dither", 'd', 0, "Use dithering when possible.");
     options.emplace_back("tags", 't', 1, "Set the tags directory.", "<dir>");
     options.emplace_back("output-tags", 'o', 1, "Set the output tags directory. By default, the input tags directory is used.", "<dir>");
+    options.emplace_back("regenerate-mipmaps", 'M', 0, "Regenerate mipmaps. Note that this will disregard all post-processing settings on the bitmap tag. Also, this can only be used with 2D textures.");
 
     static constexpr char DESCRIPTION[] = "Convince a tag to work with the Xbox version of Halo when nothing else works.";
     static constexpr char USAGE[] = "[options] -T <action> -o <dir> <tag.class>";
@@ -313,6 +382,9 @@ int main(int argc, const char **argv) {
                 break;
             case 'P':
                 last_resort_options.use_filesystem_path = true;
+                break;
+            case 'M':
+                last_resort_options.generate_mipmaps = true;
                 break;
             case 'd':
                 last_resort_options.dither = true;
@@ -380,16 +452,16 @@ int main(int argc, const char **argv) {
         auto tag_file = Invader::Parser::ParserStruct::parse_hek_tag_file(file_data->data(), file_data->size());
         switch(*last_resort_options.action) {
             case LastResortAction::LAST_RESORT_ACTION_HUD_METER_SWAP:
-                hud_meter_swap(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither);
+                hud_meter_swap(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither, last_resort_options.generate_mipmaps);
                 break;
             case LastResortAction::LAST_RESORT_ACTION_MULTIPURPOSE_GBX_TO_XBOX:
-                multi_gbx_to_xbox(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither);
+                multi_gbx_to_xbox(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither, last_resort_options.generate_mipmaps);
                 break;
             case LastResortAction::LAST_RESORT_ACTION_MULTIPURPOSE_XBOX_TO_GBX:
-                multi_xbox_to_gbx(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither);
+                multi_xbox_to_gbx(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither, last_resort_options.generate_mipmaps);
                 break;
             case LastResortAction::LAST_RESORT_ACTION_BITMAP_PASSTHROUGH:
-                iterate_through_bitmap_tag(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither, [](auto &) {});
+                iterate_through_bitmap_tag(dynamic_cast<Invader::Parser::Bitmap *>(tag_file.get()), last_resort_options.force_format, last_resort_options.dither, last_resort_options.generate_mipmaps, [](auto &) {});
                 break;
             case LastResortAction::LAST_RESORT_ACTION_SOUND_TO_XBOX_ADPCM:
                 if(!sound_to_xbox_adpcm(dynamic_cast<Invader::Parser::Sound *>(tag_file.get()))) {
