@@ -427,8 +427,8 @@ int main(int argc, const char **argv) {
     std::string path;
     
     if(last_resort_options.use_filesystem_path) {
-        auto path_maybe = Invader::File::file_path_to_tag_path(remaining_arguments[0], std::vector<std::filesystem::path>(&last_resort_options.tags, &last_resort_options.tags + 1), true);
-        if(path_maybe.has_value()) {
+        auto path_maybe = Invader::File::file_path_to_tag_path(remaining_arguments[0], last_resort_options.tags);
+        if(path_maybe.has_value() && std::filesystem::exists(remaining_arguments[0])) {
             path = path_maybe.value();
         }
         else {
@@ -471,7 +471,7 @@ int main(int argc, const char **argv) {
                 break;
         }
         
-        auto tag_file_saved = tag_file->generate_hek_tag_data(reinterpret_cast<const Invader::HEK::TagFileHeader *>(file_data->data())->tag_class_int);
+        auto tag_file_saved = tag_file->generate_hek_tag_data(reinterpret_cast<const Invader::HEK::TagFileHeader *>(file_data->data())->tag_fourcc);
         
         auto output_file_path = last_resort_options.output_tags.value() / Invader::File::halo_path_to_preferred_path(path);
         
