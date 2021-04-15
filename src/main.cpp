@@ -31,8 +31,6 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         throw std::exception();
     }
     
-    bool require_lossless_input = bitmap->compressed_color_plate_data.size() > 0;
-    
     std::vector<std::byte> new_bitmap_data;
     for(auto &i : bitmap->bitmap_data) {
         auto size_of_bitmap = Invader::BitmapEncode::bitmap_data_size(i.width, i.height, i.depth, i.mipmap_count, i.format, i.type);
@@ -41,13 +39,6 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
         if(i.pixel_data_offset >= bitmap->processed_pixel_data.size() || size_of_bitmap > bitmap->processed_pixel_data.size() || i.pixel_data_offset + size_of_bitmap > bitmap->processed_pixel_data.size()) {
             eprintf_error("Bitmap tag invalid - bitmap data out of bounds");
             throw std::exception();
-        }
-        
-        if(require_lossless_input && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_X8R8G8B8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8R8G8B8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_Y8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_A8Y8 && i.format != Invader::HEK::BitmapDataFormat::BITMAP_DATA_FORMAT_AY8) {
-            eprintf_error("One or more bitmaps is in a lossy format, but there is color plate data!");
-            eprintf_error("Converting from a lossy format should NOT be done if there is color plate data.");
-            eprintf_error("Use `invader-bitmap -R -F 32-bit` to regenerate this bitmap tag, first.");
-            std::exit(EXIT_FAILURE);
         }
         
         auto *data = bitmap->processed_pixel_data.data() + i.pixel_data_offset;
@@ -170,8 +161,6 @@ void iterate_through_bitmap_tag(Invader::Parser::Bitmap *bitmap, const std::opti
     }
     
     bitmap->processed_pixel_data = new_bitmap_data;
-    
-    bitmap->compressed_color_plate_data.clear(); // clear this in case it isn't -.-
     
     oprintf_success("Modified %zu bitmap%s", bitmap->bitmap_data.size(), bitmap->bitmap_data.size() == 1 ? "" : "s");
 }
@@ -343,6 +332,7 @@ int main(int argc, const char **argv) {
         std::filesystem::path tags = "tags";
         std::optional<std::filesystem::path> output_tags;
         std::optional<PreferredFormat> force_format;
+        bool overwrite_tags = false;
     } last_resort_options;
     
     std::vector<CommandLineOption> options;
@@ -350,8 +340,9 @@ int main(int argc, const char **argv) {
     options.emplace_back("bitmap-format", 'F', 1, "Force the bitmap format to be something else (can be dxt1, dxt3, dxt5, monochrome, 32-bit, 16-bit, a8r8g8b8, x8r8g8b8, r5g6b5, a1r5g5b5, a4r4g4b4, a8, y8, ay8, a8y8, p8)", "<format>");
     options.emplace_back("fs-path", 'P', 0, "Use a filesystem path for the tag.");
     options.emplace_back("dither", 'd', 0, "Use dithering when possible.");
+    options.emplace_back("overwrite", 'O', 0, "Allow overwriting of the tag in the tags directory. This cannot be used with --overwrite-tags.");
     options.emplace_back("tags", 't', 1, "Set the tags directory.", "<dir>");
-    options.emplace_back("output-tags", 'o', 1, "Set the output tags directory. By default, the input tags directory is used.", "<dir>");
+    options.emplace_back("output-tags", 'o', 1, "Set the output tags directory. If you don't specify anything, the input tags directory is used, but only if you pass --overwrite.", "<dir>");
     options.emplace_back("regenerate-mipmaps", 'M', 0, "Regenerate mipmaps. Note that this will disregard all post-processing settings on the bitmap tag. Also, this can only be used with 2D textures.");
 
     static constexpr char DESCRIPTION[] = "Convince a tag to work with the Xbox version of Halo when nothing else works.";
@@ -409,6 +400,9 @@ int main(int argc, const char **argv) {
             case 'o':
                 last_resort_options.output_tags = arguments[0];
                 break;
+            case 'O':
+                last_resort_options.overwrite_tags = true;
+                break;
             default:
                 break;
         }
@@ -419,8 +413,17 @@ int main(int argc, const char **argv) {
         return EXIT_FAILURE;
     }
     
+    if(last_resort_options.output_tags.has_value() && last_resort_options.overwrite_tags) {
+        eprintf_error("--overwrite and --output-tags cannot be used together. Use -h for more information.");
+        return EXIT_FAILURE;
+    }
+    
+    if(last_resort_options.overwrite_tags) {
+        last_resort_options.output_tags = last_resort_options.tags;
+    }
+    
     if(!last_resort_options.output_tags.has_value()) {
-        eprintf_error("No output tags directory was specified. Use -h for more information.");
+        eprintf_error("No output tags directory was specified. Use --overwrite to overwrite instead.");
         return EXIT_FAILURE;
     }
     
